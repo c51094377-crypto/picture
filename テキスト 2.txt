@@ -1,0 +1,295 @@
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>画像文字変換 OCR</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  padding: 20px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  background: #101827;
+  color: #edf3ff;
+}
+main { max-width: 850px; margin: auto; }
+h1 { font-size: 27px; margin-bottom: 8px; }
+.sub { color: #aab8d0; margin-bottom: 24px; }
+.panel {
+  background: #1b2639;
+  border: 1px solid #34435c;
+  border-radius: 15px;
+  padding: 18px;
+  margin-bottom: 16px;
+}
+#drop {
+  border: 2px dashed #6583ad;
+  border-radius: 12px;
+  padding: 28px 12px;
+  text-align: center;
+  cursor: pointer;
+  background: #152137;
+}
+#drop:hover { background: #21324d; }
+input[type=file] { display: none; }
+button {
+  background: #3778ed;
+  color: white;
+  border: 0;
+  padding: 12px 16px;
+  border-radius: 9px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  margin: 5px 4px 5px 0;
+}
+button:disabled { opacity: .45; cursor: not-allowed; }
+.secondary { background: #35465f; }
+#preview {
+  display: none;
+  width: 100%;
+  max-height: 400px;
+  object-fit: contain;
+  margin-top: 16px;
+  border-radius: 8px;
+  background: #0d1420;
+}
+textarea {
+  width: 100%;
+  min-height: 250px;
+  resize: vertical;
+  border-radius: 10px;
+  border: 1px solid #435572;
+  background: #0e1726;
+  color: #f4f7ff;
+  padding: 14px;
+  font-size: 16px;
+  line-height: 1.7;
+}
+#status { color: #9bc4ff; margin: 12px 0; }
+#progress {
+  width: 100%;
+  height: 8px;
+  accent-color: #4388ff;
+}
+.small { color: #aab8d0; font-size: 13px; line-height: 1.7; }
+</style>
+</head>
+<body>
+<main>
+  <h1>画像文字変換 OCR</h1>
+  <p class="sub">画像を送信して、文字をテキストに変換。</p>
+
+  <section class="panel">
+    <div id="drop" role="button" tabindex="0">
+      <div style="font-size:42px">📄</div>
+      <strong>画像を選択、またはここにドロップ</strong>
+      <p class="small">PNG・JPG・WebP など</p>
+      <button type="button" id="choose">画像を選択</button>
+    </div>
+    <input id="file" type="file" accept="image/*">
+    <img id="preview" alt="選択した画像">
+    <div id="status" aria-live="polite">画像を選択してね。</div>
+    <progress id="progress" max="100" value="0"></progress>
+    <div>
+      <button id="recognize" disabled>文字を読み取る</button>
+      <button id="clear" class="secondary">リセット</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>変換結果</h2>
+    <textarea id="result" placeholder="認識した文字がここに表示されるよ。手動で編集することもできる。"></textarea>
+    <div>
+      <button id="copy">テキストをコピー</button>
+      <button id="download">TXTファイル保存</button>
+    </div>
+    <p class="small">
+      OCRは文字を完全に読み取れるとは限らないよ。
+      変換結果に誤字がないか確認してね。
+    </p>
+  </section>
+
+  <p class="small">
+    初回の文字認識にはインターネット接続が必要。
+    画像はこのページ内で処理し、外部のOCRサービスには送信しない設計だよ。
+    OCRライブラリと言語データの読み込みには外部通信を使うよ。
+  </p>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+const fileInput = document.getElementById('file');
+const drop = document.getElementById('drop');
+const preview = document.getElementById('preview');
+const recognize = document.getElementById('recognize');
+const result = document.getElementById('result');
+const status = document.getElementById('status');
+const progress = document.getElementById('progress');
+
+let imageFile = null;
+let imageURL = null;
+let busy = false;
+
+function setStatus(message) {
+  status.textContent = message;
+}
+
+function selectFile(file) {
+  if (!file) return;
+
+  if (!file.type.startsWith('image/')) {
+    setStatus('画像ファイルを選択してね。');
+    return;
+  }
+
+  if (busy) return;
+
+  imageFile = file;
+
+  if (imageURL) URL.revokeObjectURL(imageURL);
+  imageURL = URL.createObjectURL(file);
+
+  preview.src = imageURL;
+  preview.style.display = 'block';
+  recognize.disabled = false;
+  progress.value = 0;
+  setStatus('画像を選択したよ。読み取りを開始できるよ。');
+}
+
+document.getElementById('choose').addEventListener('click', () => {
+  fileInput.click();
+});
+
+drop.addEventListener('click', (event) => {
+  if (event.target.closest('button')) return;
+  fileInput.click();
+});
+
+drop.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    fileInput.click();
+  }
+});
+
+fileInput.addEventListener('change', () => {
+  selectFile(fileInput.files[0]);
+});
+
+drop.addEventListener('dragover', (event) => {
+  event.preventDefault();
+});
+
+drop.addEventListener('drop', (event) => {
+  event.preventDefault();
+  selectFile(event.dataTransfer.files[0]);
+});
+
+recognize.addEventListener('click', async () => {
+  if (!imageFile || busy) return;
+
+  if (!window.Tesseract) {
+    setStatus('OCRライブラリを読み込めなかったよ。通信を確認してね。');
+    return;
+  }
+
+  busy = true;
+  recognize.disabled = true;
+  progress.value = 0;
+  setStatus('日本語の文字認識エンジンを準備中...');
+
+  let worker;
+
+  try {
+    worker = await Tesseract.createWorker('jpn+eng', 1, {
+      logger: message => {
+        if (message.status) {
+          const percent = Math.round((message.progress || 0) * 100);
+          progress.value = percent;
+          setStatus(message.status + ' ' + percent + '%');
+        }
+      }
+    });
+
+    setStatus('画像の文字を読み取っているよ...');
+
+    const { data } = await worker.recognize(imageFile);
+    result.value = data.text || '';
+
+    progress.value = 100;
+    setStatus(
+      result.value.trim()
+        ? '変換完了！ 読み取った文章を確認してね。'
+        : '文字を認識できなかったよ。鮮明な画像で試してね。'
+    );
+  } catch (error) {
+    console.error(error);
+    setStatus('エラーが発生したよ。通信状況や画像を確認してね。');
+  } finally {
+    if (worker) {
+      try {
+        await worker.terminate();
+      } catch (error) {
+        console.error(error);
+      }
+    }
+    busy = false;
+    recognize.disabled = !imageFile;
+  }
+});
+
+document.getElementById('copy').addEventListener('click', async () => {
+  if (!result.value) {
+    setStatus('コピーするテキストがないよ。');
+    return;
+  }
+
+  try {
+    await navigator.clipboard.writeText(result.value);
+    setStatus('テキストをコピーしたよ！');
+  } catch {
+    result.focus();
+    result.select();
+    const copied = document.execCommand('copy');
+    setStatus(copied
+      ? 'テキストをコピーしたよ！'
+      : '文章を選択して手動でコピーしてね。');
+  }
+});
+
+document.getElementById('download').addEventListener('click', () => {
+  const blob = new Blob([result.value], {
+    type: 'text/plain;charset=utf-8'
+  });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'OCR_変換結果.txt';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
+
+document.getElementById('clear').addEventListener('click', () => {
+  if (busy) return;
+
+  imageFile = null;
+  fileInput.value = '';
+  result.value = '';
+  preview.removeAttribute('src');
+  preview.style.display = 'none';
+
+  if (imageURL) {
+    URL.revokeObjectURL(imageURL);
+    imageURL = null;
+  }
+
+  progress.value = 0;
+  recognize.disabled = true;
+  setStatus('画像を選択してね。');
+});
+</script>
+</body>
+</html>
